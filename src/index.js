@@ -4,7 +4,7 @@ const { WebSocketServer } = require('ws');
 const { Registry } = require('./registry');
 const { TcpRelay } = require('./relay');
 
-const WS_PORT = Number(process.env.PORT || 8080);
+const WS_PORT = Number(process.env.PORT || 3000);
 const RELAY_PORT = 9001;
 
 const registry = new Registry();
