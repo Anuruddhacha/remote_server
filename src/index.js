@@ -4,9 +4,8 @@ const { WebSocketServer } = require('ws');
 const { Registry } = require('./registry');
 const { TcpRelay } = require('./relay');
 
-const WS_PORT = Number(process.env.WS_PORT || 8080);
-const RELAY_PORT = Number(process.env.RELAY_PORT || 9001);
-const PUBLIC_HOST = process.env.PUBLIC_HOST || '127.0.0.1';
+const WS_PORT = Number(process.env.PORT || 8080);
+const RELAY_PORT = 9001;
 
 const registry = new Registry();
 const relay = new TcpRelay(RELAY_PORT);
@@ -16,6 +15,10 @@ const pendingSessions = new Map();
 
 /** @type {Map<string, string>} ws -> hostId */
 const socketToHostId = new Map();
+
+function getPublicHost(ws) {
+  return ws.publicHost || '127.0.0.1';
+}
 
 function send(ws, payload) {
   if (ws.readyState === 1) {
@@ -44,7 +47,7 @@ function handleMessage(ws, msg) {
       }
 
       socketToHostId.set(ws, id);
-      send(ws, { type: 'register_ok', id, relayPort: RELAY_PORT, publicHost: PUBLIC_HOST });
+      send(ws, { type: 'register_ok', id, relayPort: RELAY_PORT, publicHost: getPublicHost(ws) });
       break;
     }
 
@@ -105,7 +108,7 @@ function handleMessage(ws, msg) {
       }
 
       const relayInfo = {
-        publicHost: PUBLIC_HOST,
+        publicHost: getPublicHost(pending.viewerWs),
         relayPort: RELAY_PORT,
         relayToken: pending.relayToken,
       };
@@ -160,7 +163,10 @@ async function main() {
 
   const wss = new WebSocketServer({ server });
 
-  wss.on('connection', (ws) => {
+  wss.on('connection', (ws, req) => {
+    const hostHeader = req.headers.host || '';
+    ws.publicHost = hostHeader.split(':')[0] || '127.0.0.1';
+
     ws.on('message', (raw) => {
       let msg;
       try {
@@ -185,10 +191,9 @@ async function main() {
     });
   });
 
-  server.listen(WS_PORT, () => {
-    console.log(`Signaling WS:  ws://127.0.0.1:${WS_PORT}`);
-    console.log(`TCP relay:     tcp://127.0.0.1:${RELAY_PORT}`);
-    console.log(`PUBLIC_HOST=${PUBLIC_HOST} (set to your VPS IP for remote clients)`);
+  server.listen(WS_PORT, '0.0.0.0', () => {
+    console.log(`Signaling WS:  port ${WS_PORT}`);
+    console.log(`TCP relay:     port ${RELAY_PORT}`);
   });
 }
 

@@ -9,9 +9,9 @@ class TcpRelay {
     this.server = net.createServer((socket) => this.handleConnection(socket));
   }
 
-  start() {
+  start(host = '0.0.0.0') {
     return new Promise((resolve, reject) => {
-      this.server.listen(this.port, () => resolve());
+      this.server.listen(this.port, host, () => resolve());
       this.server.on('error', reject);
     });
   }
