@@ -159,6 +159,10 @@ class TcpRelay {
     }
   }
 
+  sessionCount() {
+    return this.sessions.size;
+  }
+
   removeSession(token) {
     const session = this.sessions.get(token);
     if (!session) {

@@ -14,6 +14,9 @@ const relay = new TcpRelay(RELAY_PORT);
 /** @type {Map<string, { sessionId: string, hostId: string, viewerWs: import('ws').WebSocket, relayToken: string }>} */
 const pendingSessions = new Map();
 
+/** @type {Map<string, { hostWs: import('ws').WebSocket, viewerWs: import('ws').WebSocket, framesRelayed: number }>} */
+const activeStreams = new Map();
+
 /** @type {Map<import('ws').WebSocket, { id: string, role: string }>} */
 const socketMeta = new Map();
 
@@ -36,11 +39,39 @@ function describeSocket(ws) {
 
 function send(ws, payload) {
   if (ws.readyState !== 1) {
-    warn('SEND', `Cannot send to closed socket (${describeSocket(ws)})`, payload.type);
+    warn('SEND', `Cannot send to closed socket (${describeSocket(ws)})`, { type: payload.type });
     return;
   }
-  log('SEND', `→ ${describeSocket(ws)}`, { type: payload.type, ...payload });
+  if (payload.type !== 'stream_frame') {
+    log('SEND', `→ ${describeSocket(ws)}`, { type: payload.type, sessionId: payload.sessionId });
+  }
   ws.send(JSON.stringify(payload));
+}
+
+function forwardStream(ws, msg) {
+  const sessionId = String(msg.sessionId || '');
+  const stream = activeStreams.get(sessionId);
+  if (!stream) {
+    warn('STREAM', 'No active stream for session', { sessionId });
+    return;
+  }
+
+  const peer = stream.hostWs === ws ? stream.viewerWs : stream.hostWs;
+  if (!peer || peer.readyState !== 1) {
+    warn('STREAM', 'Stream peer not connected', { sessionId });
+    return;
+  }
+
+  stream.framesRelayed += 1;
+  if (stream.framesRelayed === 1 || stream.framesRelayed % 20 === 0) {
+    log('STREAM', `Relaying frame #${stream.framesRelayed}`, {
+      sessionId,
+      frameType: msg.frameType,
+      bytes: msg.payload?.length || 0,
+    });
+  }
+
+  peer.send(JSON.stringify(msg));
 }
 
 function makeSessionId() {
@@ -48,7 +79,9 @@ function makeSessionId() {
 }
 
 function handleMessage(ws, msg) {
-  log('MSG', `← ${describeSocket(ws)}`, { type: msg.type, ...msg });
+  if (msg.type !== 'stream_frame' && msg.type !== 'heartbeat') {
+    log('MSG', `← ${describeSocket(ws)}`, { type: msg.type, sessionId: msg.sessionId, targetId: msg.targetId });
+  }
 
   switch (msg.type) {
     case 'register': {
@@ -156,34 +189,32 @@ function handleMessage(ws, msg) {
         return;
       }
 
-      const relayInfo = {
-        publicHost: getPublicHost(pending.viewerWs),
-        relayPort: RELAY_PORT,
-        relayToken: pending.relayToken,
-      };
-
-      log('ACCEPT', 'Host accepted — sending relay info to both peers', {
+      log('ACCEPT', 'Host accepted — starting WebSocket stream', {
         sessionId,
         hostId: pending.hostId,
-        ...relayInfo,
-        relayToken: pending.relayToken.slice(0, 8) + '...',
       });
 
-      send(pending.viewerWs, {
-        type: 'connect_accept',
-        sessionId,
-        role: 'viewer',
-        ...relayInfo,
+      activeStreams.set(sessionId, {
+        hostWs: ws,
+        viewerWs: pending.viewerWs,
+        framesRelayed: 0,
       });
 
-      send(ws, {
+      const acceptMsg = {
         type: 'connect_accept',
         sessionId,
-        role: 'host',
-        ...relayInfo,
-      });
+        mode: 'websocket',
+      };
+
+      send(pending.viewerWs, { ...acceptMsg, role: 'viewer' });
+      send(ws, { ...acceptMsg, role: 'host' });
 
       pendingSessions.delete(sessionId);
+      break;
+    }
+
+    case 'stream_frame': {
+      forwardStream(ws, msg);
       break;
     }
 
@@ -214,6 +245,8 @@ function handleMessage(ws, msg) {
 }
 
 async function main() {
+  process.stderr.write('=== Remote Desk Server Starting ===\n');
+
   log('STARTUP', 'Starting Remote Desk signaling server...');
 
   await relay.start();
@@ -280,6 +313,13 @@ async function main() {
           relay.removeSession(pending.relayToken);
         }
       }
+
+      for (const [sessionId, stream] of activeStreams.entries()) {
+        if (stream.hostWs === ws || stream.viewerWs === ws) {
+          log('STREAM', 'Peer disconnected — closing stream', { sessionId, framesRelayed: stream.framesRelayed });
+          activeStreams.delete(sessionId);
+        }
+      }
     });
 
     ws.on('error', (err) => {
@@ -293,6 +333,15 @@ async function main() {
       relayPort: RELAY_PORT,
       pid: process.pid,
     });
+
+    // Heartbeat so Back4App logs show the server is alive
+    setInterval(() => {
+      log('ALIVE', 'Server running', {
+        onlineHosts: registry.count(),
+        pendingSessions: pendingSessions.size,
+        activeStreams: activeStreams.size,
+      });
+    }, 30000);
   });
 }
 
