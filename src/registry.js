@@ -1,3 +1,5 @@
+const { log } = require('./logger');
+
 class Registry {
   constructor() {
     /** @type {Map<string, { ws: import('ws').WebSocket, deviceName: string, registeredAt: number }>} */
@@ -18,16 +20,22 @@ class Registry {
   set(id, ws, deviceName) {
     this.unregisterBySocket(ws);
     this.hosts.set(id, { ws, deviceName, registeredAt: Date.now() });
+    log('REGISTRY', 'Host stored', { id, deviceName, total: this.hosts.size });
   }
 
   get(id) {
     return this.hosts.get(id) ?? null;
   }
 
+  count() {
+    return this.hosts.size;
+  }
+
   unregisterBySocket(ws) {
     for (const [id, entry] of this.hosts.entries()) {
       if (entry.ws === ws) {
         this.hosts.delete(id);
+        log('REGISTRY', 'Host removed', { id, total: this.hosts.size });
         return id;
       }
     }
